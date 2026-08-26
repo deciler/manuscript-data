@@ -1,0 +1,86 @@
+# 完整修正版：GAM 分季节拟合并绘图（带 95% CI 与 p 值）
+# ===========================
+library(readxl)
+library(mgcv)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# 1. 读取数据（你的路径）
+#（沉积物数据为data.xlsx，水体数据为datawater.xlsx，按照实际路径修改即可）
+df <- read_excel("D:/R语言绘图/绘图类型及数据表/空间统计学分析FT/datawater.xlsx")
+
+# 确认列名，若不对请调整
+# 期望列: Sample, MPs, Season, Distance
+print(colnames(df))
+
+# 强制 Season 为因子，顺序 March -> June
+df <- df %>%
+  mutate(Season = factor(Season, levels = c("March", "June")))
+
+# 检查 Distance 是否存在且为数值
+if(! "Distance" %in% names(df)) stop("数据框中找不到 'Distance' 列，请确认列名。")
+df$Distance <- as.numeric(df$Distance)
+
+# 2. 拟合按季节的 GAM（by = Season）
+gam_byseason <- gam(MPs ~ s(Distance, by = Season, k = 5) + Season,
+                    data = df, method = "REML")
+
+# 打印 summary（包含 edf 与 p 值）
+sg <- summary(gam_byseason)
+print(sg)
+
+# 提取 smooth 部分的 p 值（小心顺序：第1行为 SeasonMarch，第2行为 SeasonJune）
+p_march <- sg$s.table[1, "p-value"]
+p_june  <- sg$s.table[2, "p-value"]
+lab_march <- paste0("March: p = ", signif(p_march, 3))
+lab_june  <- paste0("June:  p = ", signif(p_june, 3))
+
+# 3. 生成干净的 newdata：每个 Season 对应整个 Distance 序列（避免列表列）
+dist_seq <- seq(min(df$Distance, na.rm=TRUE), max(df$Distance, na.rm=TRUE), length.out = 200)
+newd <- expand.grid(Distance = dist_seq, Season = levels(df$Season), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+newd$Season <- factor(newd$Season, levels = levels(df$Season))  # 确保 factor levels 一致
+
+# 4. 预测并计算置信区间
+pred <- predict(gam_byseason, newdata = newd, se.fit = TRUE)
+newd$fit <- pred$fit
+newd$se  <- pred$se.fit
+newd <- newd %>% mutate(
+  upr = fit + 1.96 * se,
+  lwr = fit - 1.96 * se
+)
+
+# 5. 绘图（带 95% CI，颜色区分季节，美观）
+cols <- c("March" = "#1f77b4", "June" = "#d62728")
+
+p <- ggplot() +
+  # 置信带（按季节分开绘制，避免交叉渲染问题）
+  geom_ribbon(data = filter(newd, Season == "March"),
+              aes(x = Distance, ymin = lwr, ymax = upr),
+              fill = cols["March"], alpha = 0.15, inherit.aes = FALSE) +
+  geom_ribbon(data = filter(newd, Season == "June"),
+              aes(x = Distance, ymin = lwr, ymax = upr),
+              fill = cols["June"], alpha = 0.15, inherit.aes = FALSE) +
+  
+  # 拟合曲线
+  geom_line(data = newd, aes(x = Distance, y = fit, color = Season), size = 1.2) +
+  
+  # 原始数据点
+  geom_point(data = df, aes(x = Distance, y = MPs, color = Season), size = 2.6, alpha = 0.8) +
+  
+  scale_color_manual(values = cols) +
+  theme_bw(base_size = 14) +
+  theme(panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_blank()) +
+  labs(title = "GAM smooth of microplastic abundance (March vs June)",
+       x = "Distance from coastline (m)",
+       y = "Microplastic abundance (MPs)") +
+  
+  # 在图上右上角标注 p 值（根据画布范围确定坐标）
+  annotate("text", x = max(dist_seq), y = max(newd$fit, na.rm=TRUE) * 1.02,
+           label = lab_march, hjust = 1, vjust = 1, color = cols["March"], size = 4) +
+  annotate("text", x = max(dist_seq), y = max(newd$fit, na.rm=TRUE) * 0.98,
+           label = lab_june,  hjust = 1, vjust = 1, color = cols["June"],  size = 4)
+
+print(p)

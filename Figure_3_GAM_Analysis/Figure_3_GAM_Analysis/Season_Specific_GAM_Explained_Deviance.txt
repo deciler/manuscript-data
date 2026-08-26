@@ -1,0 +1,121 @@
+# 完整修正版：GAM 分季节拟合并绘图（带 95% CI 与 p 值）+ 分季节解释度
+# ===========================
+library(readxl)
+library(mgcv)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# 1. 读取数据（你的路径）
+df <- read_excel("D:/R语言绘图/绘图类型及数据表/空间统计学分析FT/data.xlsx")
+
+# 确认列名，若不对请调整
+print(colnames(df))
+
+# 强制 Season 为因子，顺序 March -> June
+df <- df %>%
+  mutate(Season = factor(Season, levels = c("March", "June")))
+
+# 检查 Distance 是否存在且为数值
+if(! "Distance" %in% names(df)) stop("数据框中找不到 'Distance' 列，请确认列名。")
+df$Distance <- as.numeric(df$Distance)
+
+# ========== 新增：分季节独立拟合（获取每个季节独立的解释度）==========
+cat("\n========== 分季节独立模型结果 ==========\n")
+
+season_deviance <- data.frame()
+
+for (s in c("March", "June")) {
+  sub <- subset(df, Season == s)
+  
+  # 独立拟合每个季节
+  model_sep <- gam(MPs ~ s(Distance, k = 5), data = sub, method = "REML")
+  sm_sep <- summary(model_sep)
+  
+  # 存储结果
+  season_deviance <- rbind(season_deviance, data.frame(
+    Season = s,
+    edf = round(sm_sep$s.table[, "edf"], 3),
+    p_value = signif(sm_sep$s.table[, "p-value"], 4),
+    Deviance_Explained = round(sm_sep$dev.expl * 100, 1),  # 独立解释度(%)
+    R_sq_adj = round(sm_sep$r.sq, 4)
+  ))
+  
+  cat("\n--- Season:", s, "---\n")
+  cat("edf =", round(sm_sep$s.table[, "edf"], 3), "\n")
+  cat("p-value =", signif(sm_sep$s.table[, "p-value"], 4), "\n")
+  cat("Deviance explained =", round(sm_sep$dev.expl * 100, 1), "%\n")
+  cat("Adjusted R-sq =", round(sm_sep$r.sq, 4), "\n")
+}
+
+print(season_deviance)
+
+# ========== 原有复合模型（用于绘图和比较）==========
+cat("\n========== 复合模型结果（全局） ==========\n")
+
+# 2. 拟合按季节的 GAM（by = Season）
+gam_byseason <- gam(MPs ~ s(Distance, by = Season, k = 5) + Season,
+                    data = df, method = "REML")
+
+# 打印 summary（包含 edf 与 p 值）
+sg <- summary(gam_byseason)
+print(sg)
+
+# 输出全局解释度
+cat("\n全局模型 Deviance explained =", round(sg$dev.expl * 100, 1), "%\n")
+cat("全局模型 Adjusted R-sq =", round(sg$r.sq, 4), "\n")
+
+# 提取 smooth 部分的 p 值
+p_march <- sg$s.table[1, "p-value"]
+p_june  <- sg$s.table[2, "p-value"]
+lab_march <- paste0("March: p = ", signif(p_march, 3), " (R² = ", season_deviance$R_sq_adj[1], ")")
+lab_june  <- paste0("June:  p = ", signif(p_june, 3), " (R² = ", season_deviance$R_sq_adj[2], ")")
+
+# 3. 生成干净的 newdata
+dist_seq <- seq(min(df$Distance, na.rm=TRUE), max(df$Distance, na.rm=TRUE), length.out = 200)
+newd <- expand.grid(Distance = dist_seq, Season = levels(df$Season), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+newd$Season <- factor(newd$Season, levels = levels(df$Season))
+
+# 4. 预测并计算置信区间
+pred <- predict(gam_byseason, newdata = newd, se.fit = TRUE)
+newd$fit <- pred$fit
+newd$se  <- pred$se.fit
+newd <- newd %>% mutate(
+  upr = fit + 1.96 * se,
+  lwr = fit - 1.96 * se
+)
+
+# 5. 绘图（标签中加入了R²值）
+cols <- c("March" = "#1f77b4", "June" = "#d62728")
+
+p <- ggplot() +
+  geom_ribbon(data = filter(newd, Season == "March"),
+              aes(x = Distance, ymin = lwr, ymax = upr),
+              fill = cols["March"], alpha = 0.15, inherit.aes = FALSE) +
+  geom_ribbon(data = filter(newd, Season == "June"),
+              aes(x = Distance, ymin = lwr, ymax = upr),
+              fill = cols["June"], alpha = 0.15, inherit.aes = FALSE) +
+  geom_line(data = newd, aes(x = Distance, y = fit, color = Season), size = 1.2) +
+  geom_point(data = df, aes(x = Distance, y = MPs, color = Season), size = 2.6, alpha = 0.8) +
+  scale_color_manual(values = cols) +
+  theme_bw(base_size = 14) +
+  theme(panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_blank()) +
+  labs(title = "GAM smooth of microplastic abundance (March vs June)",
+       x = "Distance from coastline (m)",
+       y = "Microplastic abundance (MPs)") +
+  annotate("text", x = max(dist_seq), y = max(newd$fit, na.rm=TRUE) * 1.02,
+           label = lab_march, hjust = 1, vjust = 1, color = cols["March"], size = 4) +
+  annotate("text", x = max(dist_seq), y = max(newd$fit, na.rm=TRUE) * 0.98,
+           label = lab_june,  hjust = 1, vjust = 1, color = cols["June"],  size = 4)
+
+print(p)
+
+# ========== 可选：输出结果汇总表 ==========
+cat("\n========== 结果汇总 ==========\n")
+cat("\n【分季节独立模型】\n")
+print(season_deviance)
+cat("\n【复合模型全局】\n")
+cat("Deviance explained:", round(sg$dev.expl * 100, 1), "%\n")
+cat("Adjusted R-squared:", round(sg$r.sq, 4), "\n")
