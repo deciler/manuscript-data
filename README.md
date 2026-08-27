@@ -17,3 +17,5 @@ This repository contains the data and analysis files associated with the manuscr
 
 * `Figure 3_GAM_Analysis/`
   Data and R scripts used for the generalized additive model (GAM) analysis presented in Figure 3.
+
+* `Microplastic_Composition.xlsx`: Particle-level microplastic data for environmental samples, including shape, color, polymer type, particle length, and size range.
